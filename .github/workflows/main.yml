@@ -23,15 +23,11 @@ jobs:
     env:
       DISPLAY: :99  # Set the display for the entire job
     steps:
-    - name: Start Xvfb
-      run: |
-        nohup Xvfb :99 -screen 0 1024x768x16 > xvfb.log 2>&1 &
-        sleep 5
-        xdpyinfo -display :99 || (echo "Xvfb failed to start" && cat xvfb.log && exit 1)
-
+    # Step 1: Checkout repository first
     - name: Checkout repository
       uses: actions/checkout@v4
 
+    # Step 2: Install Wine and dependencies, including x11-utils
     - name: Install Wine and dependencies
       run: |
         sudo dpkg --add-architecture i386
@@ -39,28 +35,40 @@ jobs:
         sudo wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key
         sudo wget -NP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/ubuntu/dists/jammy/winehq-jammy.sources
         sudo apt update
-        sudo apt install -y winehq-stable winetricks xvfb
+        sudo apt install -y winehq-stable winetricks xvfb x11-utils
 
+    # Step 3: Start Xvfb (now xdpyinfo will be available)
+    - name: Start Xvfb
+      run: |
+        nohup Xvfb :99 -screen 0 1024x768x16 > xvfb.log 2>&1 &
+        sleep 5
+        xdpyinfo -display :99 || (echo "Xvfb failed to start" && cat xvfb.log && exit 1)
+
+    # Step 4: Configure Wine
     - name: Configure Wine
       run: |
         export WINEDEBUG=-all  # Suppress Wine debug output
         winecfg /v win10      # Set Wine to Windows 10 mode
         winetricks -q vcrun2019 corefonts  # Install common dependencies
 
+    # Step 5: Download MT5
     - name: Download MT5
       run: |
         wget -O mt5setup.exe "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe"
 
+    # Step 6: Install MT5
     - name: Install MT5
       run: |
         export WINEDEBUG=-all
         wine mt5setup.exe /S  # Silent installation
         sleep 60              # Wait for installation to complete
 
+    # Step 7: Check MT5 Installation
     - name: Check MT5 Installation
       run: |
         ls -l ~/.wine/drive_c/Program\ Files/  # Verify MT5 is installed
 
+    # Step 8: Create MT5 Login Test Script
     - name: Create MT5 Login Test Script
       run: |
         cat > login_test.py << 'EOF'
@@ -129,6 +137,7 @@ jobs:
                 sys.exit(1)
         EOF
 
+    # Step 9: Run MT5 Login Test
     - name: Run MT5 Login Test
       env:
         MT5_LOGIN: ${{ github.event.inputs.mt5_login }}
@@ -137,6 +146,7 @@ jobs:
       run: |
         python3 login_test.py
 
+    # Step 10: Clean Up
     - name: Clean Up
       if: always()
       run: |
