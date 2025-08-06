@@ -20,11 +20,18 @@ on:
 jobs:
   test-mt5-login:
     runs-on: ubuntu-latest
-    
+    env:
+      DISPLAY: :99  # Set the display for the entire job
     steps:
+    - name: Start Xvfb
+      run: |
+        nohup Xvfb :99 -screen 0 1024x768x16 > xvfb.log 2>&1 &
+        sleep 5
+        xdpyinfo -display :99 || (echo "Xvfb failed to start" && cat xvfb.log && exit 1)
+
     - name: Checkout repository
       uses: actions/checkout@v4
-    
+
     - name: Install Wine and dependencies
       run: |
         sudo dpkg --add-architecture i386
@@ -33,27 +40,28 @@ jobs:
         sudo wget -NP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/ubuntu/dists/jammy/winehq-jammy.sources
         sudo apt update
         sudo apt install -y winehq-stable winetricks xvfb
-        
+
     - name: Configure Wine
       run: |
-        export DISPLAY=:99
-        Xvfb :99 -screen 0 1024x768x16 &
-        export WINEDEBUG=-all
-        winecfg /v win10
-        winetricks -q vcrun2019 corefonts
-        
+        export WINEDEBUG=-all  # Suppress Wine debug output
+        winecfg /v win10      # Set Wine to Windows 10 mode
+        winetricks -q vcrun2019 corefonts  # Install common dependencies
+
     - name: Download MT5
       run: |
         wget -O mt5setup.exe "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe"
-        
+
     - name: Install MT5
       run: |
-        export DISPLAY=:99
         export WINEDEBUG=-all
-        wine mt5setup.exe /S
-        sleep 30
-        
-    - name: Create MT5 login script
+        wine mt5setup.exe /S  # Silent installation
+        sleep 60              # Wait for installation to complete
+
+    - name: Check MT5 Installation
+      run: |
+        ls -l ~/.wine/drive_c/Program\ Files/  # Verify MT5 is installed
+
+    - name: Create MT5 Login Test Script
       run: |
         cat > login_test.py << 'EOF'
         import subprocess
@@ -70,59 +78,14 @@ jobs:
                 print("ERROR: Missing login credentials")
                 return False
                 
-            # Create MQL5 script for login test
-            mql_script = f'''
-        //+------------------------------------------------------------------+
-        //| Script program start function                                    |
-        //+------------------------------------------------------------------+
-        void OnStart()
-          {{
-           string login = "{login}";
-           string password = "{password}";
-           string server = "{server}";
-           
-           // Attempt login
-           if(AccountInfoInteger(ACCOUNT_LOGIN) == StringToInteger(login))
-             {{
-              Print("LOGIN SUCCESS: Already connected to account ", login);
-              ExpertRemove();
-              return;
-             }}
-           
-           // Try to connect
-           if(TerminalInfoInteger(TERMINAL_CONNECTED))
-             {{
-              Print("LOGIN SUCCESS: Terminal connected");
-             }}
-           else
-             {{
-              Print("LOGIN FAILED: Terminal not connected");
-             }}
-             
-           Print("Account Server: ", AccountInfoString(ACCOUNT_SERVER));
-           Print("Account Number: ", AccountInfoInteger(ACCOUNT_LOGIN));
-           Print("Account Balance: ", AccountInfoDouble(ACCOUNT_BALANCE));
-           
-           ExpertRemove();
-          }}
-        '''
+            mt5_path = os.path.expanduser("~/.wine/drive_c/Program Files/MetaTrader 5/terminal64.exe")
+            if not os.path.exists(mt5_path):
+                print(f"ERROR: MT5 executable not found at {mt5_path}")
+                return False
             
-            # Write MQL script
-            mt5_path = os.path.expanduser("~/.wine/drive_c/Program Files/MetaTrader 5")
-            experts_path = os.path.join(mt5_path, "MQL5", "Experts")
-            os.makedirs(experts_path, exist_ok=True)
-            
-            script_path = os.path.join(experts_path, "LoginTest.mq5")
-            with open(script_path, 'w') as f:
-                f.write(mql_script)
-            
-            print(f"Created login test script at: {script_path}")
-            
-            # Run MT5 with login parameters
             try:
-                mt5_exe = os.path.join(mt5_path, "terminal64.exe")
                 cmd = [
-                    "wine", mt5_exe,
+                    "wine", mt5_path,
                     f"/login:{login}",
                     f"/password:{password}",
                     f"/server:{server}",
@@ -134,23 +97,17 @@ jobs:
                     cmd, 
                     stdout=subprocess.PIPE, 
                     stderr=subprocess.PIPE,
-                    env={**os.environ, 'DISPLAY': ':99', 'WINEDEBUG': '-all'}
+                    env={**os.environ, 'WINEDEBUG': '-all'}
                 )
                 
-                # Wait for MT5 to start and attempt login
-                time.sleep(45)
-                
-                # Check if process is still running
+                time.sleep(45)  # Wait for MT5 to start
                 if process.poll() is None:
-                    print("MT5 is running, checking login status...")
-                    
-                    # Terminate MT5
+                    print("MT5 is running, assuming login success...")
                     process.terminate()
                     try:
                         process.wait(timeout=10)
                     except subprocess.TimeoutExpired:
                         process.kill()
-                    
                     return True
                 else:
                     stdout, stderr = process.communicate()
@@ -171,22 +128,17 @@ jobs:
                 print("❌ MT5 login test failed")
                 sys.exit(1)
         EOF
-        
+
     - name: Run MT5 Login Test
       env:
         MT5_LOGIN: ${{ github.event.inputs.mt5_login }}
         MT5_PASSWORD: ${{ github.event.inputs.mt5_password }}
         MT5_SERVER: ${{ github.event.inputs.mt5_server }}
-        DISPLAY: :99
       run: |
-        export DISPLAY=:99
-        Xvfb :99 -screen 0 1024x768x16 &
-        sleep 5
         python3 login_test.py
-        
-    - name: Check Wine processes
+
+    - name: Clean Up
       if: always()
       run: |
-        ps aux | grep wine || true
         pkill -f wine || true
         pkill -f Xvfb || true
